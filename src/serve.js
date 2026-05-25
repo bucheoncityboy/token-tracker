@@ -15,6 +15,13 @@ const fs = require('fs');
 const path = require('path');
 const db = require('./db');
 
+process.on('uncaughtException', (err) => {
+  console.error('🔥 Uncaught Exception:', err.message);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('🔥 Unhandled Rejection:', reason);
+});
+
 function startServer(port = 3000, dbPath) {
   // Read dashboard HTML template once
   const templatePath = path.join(__dirname, 'dashboard.html');
@@ -575,7 +582,19 @@ function startServer(port = 3000, dbPath) {
     const targetSocket = tls.connect(targetPort, targetHost, {
       servername: targetHost,
       rejectUnauthorized: false
-    }, () => {
+    });
+
+    targetSocket.on('error', (err) => {
+      console.error('WebSocket Proxy TLS error:', err.message);
+      try { socket.end(); } catch {}
+    });
+
+    socket.on('error', (err) => {
+      console.error('WebSocket Client Socket error:', err.message);
+      try { targetSocket.end(); } catch {}
+    });
+
+    targetSocket.on('secureConnect', () => {
       const reqHeaders = [];
       reqHeaders.push(`${req.method} ${targetUrl} HTTP/1.1`);
       
@@ -588,22 +607,17 @@ function startServer(port = 3000, dbPath) {
       }
       reqHeaders.push('\r\n');
       
-      targetSocket.write(reqHeaders.join('\r\n'));
-      if (head && head.length > 0) {
-        targetSocket.write(head);
+      try {
+        targetSocket.write(reqHeaders.join('\r\n'));
+        if (head && head.length > 0) {
+          targetSocket.write(head);
+        }
+        
+        socket.pipe(targetSocket);
+        targetSocket.pipe(socket);
+      } catch (e) {
+        console.error('WebSocket Proxy pipe error:', e.message);
       }
-      
-      socket.pipe(targetSocket);
-      targetSocket.pipe(socket);
-    });
-    
-    targetSocket.on('error', (err) => {
-      console.error('WebSocket Proxy TLS error:', err.message);
-      socket.end();
-    });
-    
-    socket.on('error', (err) => {
-      targetSocket.end();
     });
   });
 
