@@ -255,10 +255,131 @@ function callOpenAI(sessionId, prompt, model, apiKey) {
   });
 }
 
+// ─── API mode: OpenAI (Subscription — Responses API) ───────
+
+function callOpenAISubscription(sessionId, prompt, model, accessToken) {
+  const body = JSON.stringify({
+    model: model,
+    input: prompt,
+  });
+
+  // Extract Organization & Project details from JWT token
+  let orgId = null;
+  let projectId = null;
+  try {
+    const tokenParts = accessToken.split('.');
+    if (tokenParts.length > 1) {
+      const payload = JSON.parse(Buffer.from(tokenParts[1], 'base64').toString());
+      
+      // 1. Direct fields
+      if (payload.org_id) orgId = payload.org_id;
+      else if (payload.org) orgId = payload.org;
+      
+      // 2. Structured orgs
+      if (!orgId && payload.orgs && Array.isArray(payload.orgs.data)) {
+        const activeOrg = payload.orgs.data.find(o => o.role === 'owner' || o.role === 'member') || payload.orgs.data[0];
+        if (activeOrg) orgId = activeOrg.id;
+      }
+      
+      // 3. Array organizations
+      if (!orgId && Array.isArray(payload.organizations)) {
+        orgId = payload.organizations[0];
+      }
+      
+      // 4. Project fields
+      if (payload.project_id) projectId = payload.project_id;
+      else if (payload.project) projectId = payload.project;
+    }
+  } catch (e) {
+    // Ignore decoding errors silently
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${accessToken}`,
+    'Content-Length': Buffer.byteLength(body),
+    'User-Agent': 'openai-cli/1.0.0', // Official CLI User-Agent to satisfy strict API scopes
+  };
+
+  // For ChatGPT Plus subscriptions, we MUST NOT send any OpenAI-Organization or OpenAI-Project headers
+  // to avoid overriding the user's personal subscription scope and triggering 401 Missing Scope errors.
+
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: 'api.openai.com',
+      path: '/v1/responses',
+      method: 'POST',
+      headers: headers,
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          console.error(`✗ OpenAI Responses API error (${res.statusCode}): ${data.slice(0, 500)}`);
+          if (res.statusCode === 401 || res.statusCode === 403) {
+            console.error(`  → Subscription token may be invalid. Try re-login:`);
+            console.error(`    token-tracker openai login --subscription`);
+          }
+          reject(new Error(`OpenAI Responses API returned ${res.statusCode}`));
+          return;
+        }
+        try {
+          const response = JSON.parse(data);
+          const usage = response.usage || {};
+          const inputTokens = usage.input_tokens || 0;
+          const outputTokens = usage.output_tokens || 0;
+
+          // Extract response text from output array
+          let responseText = '';
+          if (Array.isArray(response.output)) {
+            for (const item of response.output) {
+              if (item && item.type === 'message' && Array.isArray(item.content)) {
+                for (const block of item.content) {
+                  if (block && block.type === 'output_text' && typeof block.text === 'string') {
+                    responseText += block.text;
+                  }
+                }
+              }
+            }
+          }
+          // Fallback: try output_text directly
+          if (!responseText && response.output_text) {
+            responseText = response.output_text;
+          }
+
+          db.insertEntry({
+            session_id: sessionId,
+            input_tokens: inputTokens,
+            output_tokens: outputTokens,
+            cache_write: 0,
+            cache_read: 0,
+            record_method: 'openai-subscription',
+            prompt_preview: prompt.slice(0, 200),
+            response_text: responseText.slice(0, 5000),
+          });
+
+          updateModelIfNeeded(sessionId, model);
+
+          process.stdout.write(responseText);
+          if (!responseText) process.stdout.write(JSON.stringify(response, null, 2));
+          process.stdout.write('\n');
+
+          printUsage(inputTokens, outputTokens, 0, responseText);
+          resolve(response);
+        } catch (err) { reject(err); }
+      });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
 // ─── API dispatcher ────────────────────────────────────────
 
 function callAndRecord(sessionId, prompt, model, apiKey, apiType) {
   const type = (apiType || 'anthropic').toLowerCase();
+  if (type === 'openai-subscription') return callOpenAISubscription(sessionId, prompt, model, apiKey);
   if (type === 'openai') return callOpenAI(sessionId, prompt, model, apiKey);
   return callAnthropic(sessionId, prompt, model, apiKey);
 }

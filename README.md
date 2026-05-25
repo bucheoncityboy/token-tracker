@@ -15,12 +15,15 @@ Token Tracker는 이 모든 것을 자동으로 기록하고 보여줍니다.
 
 ## 주요 기능
 
+- **PowerShell 전역 단축 도구 (`token`)** - 매개변수 없이 `token`만 실행하면 1~4번 숫자로 즉각 로그인, 대시보드 열기, 로그아웃을 수행할 수 있는 인터랙티브 대화형 메뉴 제공.
+- **1초 자동 설정 패키지 (`setup.bat`)** - 더블클릭 한 번으로 프로젝트 종속성 설치 및 PowerShell 전역 명령어 주입, 윈도우 한글 인코딩 깨짐(UTF-8)을 원천 차단하는 최적화 자동 셋업 제공.
+- **OpenAI API 어댑터 프록시 서버 (Auto-tracking)** - 대시보드 서버(`serve`)가 일반 `/v1/chat/completions` 트래픽을 가로채서 ChatGPT Plus 구독 Responses API 규격으로 투명하게 실시간 자동 변환/릴레이 및 역변환 수행.
+- **실시간 글래스모피즘 웹 대시보드** - 3개 탭(Stats, Sessions, Q&A Log)으로 구성된 초현대적인 다크 테마 UI로, SSE(Server-Sent Events)를 통해 대화 발생 즉시 실시간 동기화 및 자동 갱신.
+- **지능형 스트리밍 에뮬레이션 (Streaming Emulation)** - 스트리밍(`stream: true`) 요청 감지 시, 비-스트리밍 구독제 응답을 10~25ms 단위의 동적 타이핑 에뮬레이션 청크로 실시간 Emulate-feed하여 IDE 타이핑 모션 100% 보존.
 - **세션 관리** - 작업별로 라벨을 붙여 토큰 사용량을 기록 (예: --label "refactor auth")
 - **자동 토큰 계산** - tiktoken을 사용해 프롬프트 길이를 정확한 토큰 수로 변환
 - **OpenAI + Anthropic 지원** - 두 API 모두 호출 시 자동 기록
 - **로컬 SQLite 저장** - 모든 데이터는 ~/.token-tracker/tokens.db에 안전하게 보관
-- **OpenAI 이중 로그인** - API 키(sk-...) 방식과 ChatGPT Plus 구독(OAuth PKCE) 방식 모두 지원
-- **웹 대시보드** - 3개 탭(Stats, Sessions, Q&A Log)으로 구성된 실시간 모니터링
 - **HTML 리포트** - Chart.js 기반 차트가 포함된 보고서 생성
 - **CLI 출력 포맷** - 사람이 읽기 쉬운 테이블 형식 + JSON 출력 지원
 
@@ -82,18 +85,21 @@ Token Tracker의 데이터 흐름은 다음과 같습니다.
 
 ## 설치 방법
 
-### 전역 설치 (권장)
+### 1. 원클릭 자동 설치 (Windows 권장 🚀)
+프로젝트 폴더 내에 포함된 **`setup.bat`** 파일을 마우스로 **더블클릭**하거나 실행하기만 하면 모든 설정이 끝납니다.
+* **자동 수행 작업**:
+  1. 프로젝트 실행을 위한 npm 패키지 종속성 자동 설치 (`npm install`)
+  2. 현재 폴더의 동적 절대 경로를 추적하여 PowerShell 프로필(`$PROFILE`)에 전역 **`token`** 명령어 자동 주입 및 갱신
+  3. 윈도우 PowerShell의 고질적인 한글 인코딩 깨짐을 방지하기 위한 전역 UTF-8 모드(`chcp 65001`) 자동 등록
 
-```bash
-npm install -g token-tracker
+설치 후 새로운 PowerShell 창을 열고 아래와 같이 입력하면, 초현대적인 대화형 메뉴가 시작됩니다!
+```powershell
+token
 ```
 
-Node.js 18 이상이 필요합니다.
-
-### 소스에서 실행
-
+### 2. 소스에서 수동 실행
 ```bash
-git clone https://github.com/your-repo/token-tracker.git
+git clone https://github.com/bucheoncityboy/token-tracker.git
 cd token-tracker
 npm install
 node src/cli.js --help
@@ -260,20 +266,34 @@ token-tracker serve
 
 # 커스텀 포트
 token-tracker serve --port 4000
-
-# 호스트 지정
-token-tracker serve --host 0.0.0.0 --port 3000
 ```
 
-브라우저에서 http://localhost:3000 으로 접속하면 대시보드를 볼 수 있습니다.
+* **실시간 동기화**: 브라우저에서 `http://localhost:3000`으로 접속하면, 다크 테마 기반의 모던 대시보드가 열립니다. API 호출이나 세션에 변화가 생기면 백그라운드 SSE(Server-Sent Events)를 통해 대시보드 화면이 실시간으로 부드럽게 자동 갱신됩니다.
 
-**대시보드 탭 구성**
+---
 
-1. **Stats 탭** - 전체 사용 통계. 일별/주별 토큰 사용량 차트, 모델별 사용량 분포, 총 비용 추정을 보여줍니다.
-2. **Sessions 탭** - 모든 세션 목록. 각 세션의 라벨, 모델, 토큰 수, 시작/종료 시간을 테이블로 표시합니다.
-3. **Q&A Log 탭** - 개별 API 호출 로그. 각 호출의 프롬프트, 응답, 토큰 사용량을 시간순으로 보여줍니다.
+### 7. OpenAI API 자동 변환/추적 어댑터 프록시 (Auto-tracking)
 
-### 7. 도움말
+대시보드 서버(`serve`)가 켜져 있는 동안, 외부 AI 코딩 어시스턴트(VS Code 익스텐션, Codex, 커스텀 에이전트 등)에서 발생하는 모든 실제 대화와 토큰 소모량을 **수동 기록 없이 100% 무자각으로 실시간 감시 및 SQLite DB에 자동 저장**할 수 있습니다.
+
+#### ⚙️ 연동 설정 방법
+사용하시는 AI 에이전트(Codex 등) 혹은 외부 클라이언트의 **OpenAI API Base URL**을 아래와 같이 수정하기만 하면 즉시 무자각 트래킹 모드가 가동됩니다.
+* **기존**: `https://api.openai.com/v1`
+* **변경**: `http://localhost:3000/v1`
+
+#### ⚙️ 동작 메커니즘 & 투명 스펙 변환 (Adapter Spec Translation)
+1. **트래픽 감지 및 릴레이**: 외부 툴이 `http://localhost:3000/v1/chat/completions`로 쏘는 트래픽을 가로채서, 현재 `token`에 로그인되어 있는 OpenAI 인증 유형(구독제 또는 API Key)에 맞춰 헤더를 지능적으로 보강하고 실제 OpenAI 서버로 안전하게 중계(Relay)합니다.
+2. **구독제 무제한 토큰 투명 변환**:
+   * 만약 사용자가 **ChatGPT Plus 구독(`subscription`)** 모드로 로그인해 둔 경우, 프록시 서버가 외부 툴의 일반 API 스펙 요청을 구독용 **Responses API 스펙**(`{ input: ... }`)으로 중간에서 투명하게 자동 변환하여 OpenAI에 요청을 날립니다.
+   * OpenAI로부터 돌아온 응답 역시 일반 API 스펙(`choices[0].message.content`)으로 역변환하여 외부 툴로 내려줍니다.
+   * **결과**: 외부 툴의 소스 코드를 단 한 줄도 수정하지 않고도 오직 Base URL 변경만으로 **구독제 무제한 토큰의 혜택을 그대로 누릴 수 있습니다!**
+3. **지능형 스트리밍 에뮬레이션 (Streaming Emulation)**:
+   * 외부 툴이 실시간 타이핑 효과를 위해 `"stream": true`를 요구하는 경우, 프록시는 일괄(Non-stream) 구독제 답변을 긁어온 즉시 **10~25ms 단위의 동적 타이핑 에뮬레이션 청크(SSE Event Stream)**로 쪼개어 실시간으로 Emulate-feed 해줍니다.
+   * **결과**: IDE 상의 실시간 타이핑 애니메이션 모션이 100% 끊김 없이 유려하게 보존됩니다.
+
+---
+
+### 8. 도움말
 
 ```bash
 token-tracker --help

@@ -10,6 +10,7 @@
 //   GET  /api/refresh   → SSE endpoint for auto-refresh
 
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const db = require('./db');
@@ -42,12 +43,21 @@ function startServer(port = 3000, dbPath) {
     return { pathname, query };
   }
 
-  const server = http.createServer((req, res) => {
+  function readRequestBody(req) {
+    return new Promise((resolve) => {
+      let body = '';
+      req.on('data', chunk => body += chunk);
+      req.on('end', () => resolve(body));
+    });
+  }
+
+  const server = http.createServer(async (req, res) => {
     const { pathname, query } = parsePath(req.url);
 
-    // CORS headers for dev
+    // CORS headers for dev / external integrations like Codex
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, OpenAI-Organization, OpenAI-Project');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
@@ -55,6 +65,331 @@ function startServer(port = 3000, dbPath) {
     }
 
     try {
+      // ── OpenAI API Adapter Proxy Interceptor ──────
+      if (pathname === '/v1/chat/completions' || pathname === '/v1/responses') {
+        if (req.method !== 'POST') {
+          jsonResponse(res, { error: 'Method not allowed' }, 405);
+          return;
+        }
+
+        const rawBody = await readRequestBody(req);
+        let reqJson;
+        try {
+          reqJson = JSON.parse(rawBody);
+        } catch {
+          jsonResponse(res, { error: 'Invalid JSON request body' }, 400);
+          return;
+        }
+
+        const config = require('./config');
+        const auth = config.getOpenAIAuth();
+
+        if (!auth.type) {
+          jsonResponse(res, { error: 'Not logged in. Please run: token login' }, 401);
+          return;
+        }
+
+        // Auto-create/reuse active session
+        const activeSession = db.getActiveSession() || db.createSession({ 
+          label: 'Codex Auto Session', 
+          model: reqJson.model || 'gpt-4o' 
+        });
+
+        let targetPath = '/v1/chat/completions';
+        let requestBody = rawBody;
+        const isSubscription = (auth.type === 'subscription');
+        const isStreamRequested = (reqJson.stream === true);
+
+        // Dynamic Adapter Spec Translation (Standard Chat completions -> ChatGPT Plus Responses API)
+        if (isSubscription) {
+          targetPath = '/v1/responses';
+          
+          if (pathname === '/v1/chat/completions') {
+            const messages = reqJson.messages || [];
+            const lastMessage = messages[messages.length - 1];
+            const promptText = lastMessage ? lastMessage.content : '';
+            
+            requestBody = JSON.stringify({
+              model: reqJson.model || 'gpt-4o',
+              input: promptText
+            });
+          }
+        }
+
+        // Fetch valid active access token (auto-refresh if OAuth expired)
+        let token;
+        try {
+          const oauth = require('./oauth');
+          token = isSubscription ? await oauth.ensureValidToken() : auth.token;
+        } catch (err) {
+          jsonResponse(res, { error: 'Auth token resolution failed', details: err.message }, 401);
+          return;
+        }
+
+        // Extract Organization and Project context dynamically from JWT payload
+        let orgId = null;
+        let projectId = null;
+        try {
+          const parts = token.split('.');
+          if (parts.length > 1) {
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
+            if (payload.org_id) orgId = payload.org_id;
+            else if (payload.org) orgId = payload.org;
+            if (!orgId && payload.orgs && Array.isArray(payload.orgs.data)) {
+              const activeOrg = payload.orgs.data.find(o => o.role === 'owner' || o.role === 'member') || payload.orgs.data[0];
+              if (activeOrg) orgId = activeOrg.id;
+            }
+            if (payload.project_id) projectId = payload.project_id;
+          }
+        } catch {}
+
+        // Recursive Relayer supporting intelligent API Key fallback
+        function executeRelay(useSubscriptionToken, isFallbackRetry = false) {
+          const currentToken = useSubscriptionToken ? token : (config.get('openai_api_key') || process.env.OPENAI_API_KEY);
+          
+          if (!currentToken) {
+            jsonResponse(res, { 
+              error: 'Authentication failed. Subscription returned 401 and no fallback OpenAI API Key was found in configuration.' 
+            }, 401);
+            return;
+          }
+
+          const currentPath = useSubscriptionToken ? targetPath : '/v1/chat/completions';
+          const currentBody = useSubscriptionToken ? requestBody : rawBody; // Fallback uses standard rawBody
+
+          const headers = {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${currentToken}`,
+            'Content-Length': Buffer.byteLength(currentBody),
+            'User-Agent': 'openai-cli/1.0.0'
+          };
+          
+          // Apply org context only to standard API keys to prevent subscription 401 overrides
+          if (!useSubscriptionToken) {
+            if (orgId) headers['OpenAI-Organization'] = orgId;
+            if (projectId) headers['OpenAI-Project'] = projectId;
+          }
+
+          // ────── CASE A: Standard API Streaming Relay ──────
+          if (isStreamRequested && !useSubscriptionToken) {
+            res.writeHead(200, {
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              'Connection': 'keep-alive',
+              'Access-Control-Allow-Origin': '*'
+            });
+
+            let accumulatedText = '';
+
+            const proxyReq = https.request({
+              hostname: 'api.openai.com',
+              path: currentPath,
+              method: 'POST',
+              headers: headers
+            }, (proxyRes) => {
+              proxyRes.on('data', (chunk) => {
+                res.write(chunk);
+
+                const chunkStr = chunk.toString();
+                const lines = chunkStr.split('\n');
+                for (const line of lines) {
+                  const cleanLine = line.trim();
+                  if (cleanLine.startsWith('data: ') && cleanLine !== 'data: [DONE]') {
+                    try {
+                      const parsed = JSON.parse(cleanLine.slice(6));
+                      accumulatedText += parsed.choices?.[0]?.delta?.content || '';
+                    } catch {}
+                  }
+                }
+              });
+
+              proxyRes.on('end', () => {
+                const tokenizer = require('./tokenizer');
+                const { tokens: inputTokens } = tokenizer.countTokens(reqJson.messages ? reqJson.messages[reqJson.messages.length - 1]?.content : '', reqJson.model || 'gpt-4o');
+                const { tokens: outputTokens } = tokenizer.countTokens(accumulatedText, reqJson.model || 'gpt-4o');
+
+                db.insertEntry({
+                  session_id: activeSession,
+                  input_tokens: inputTokens,
+                  output_tokens: outputTokens,
+                  record_method: isFallbackRetry ? 'proxy-api-stream-fallback' : 'proxy-api-stream',
+                  prompt_preview: (reqJson.messages ? reqJson.messages[reqJson.messages.length - 1]?.content : '').slice(0, 200),
+                  response_text: accumulatedText.slice(0, 5000)
+                });
+
+                sendSSE({ event: 'new_entry', session_id: activeSession });
+                res.end();
+              });
+            });
+
+            proxyReq.on('error', (err) => {
+              res.write(`data: ${JSON.stringify({ error: 'Relay connection failed', details: err.message })}\n\n`);
+              res.end();
+            });
+            proxyReq.write(currentBody);
+            proxyReq.end();
+            return;
+          }
+
+          // ────── CASE B: Non-stream or Subscription Adapter ──────
+          const proxyReq = https.request({
+            hostname: 'api.openai.com',
+            path: currentPath,
+            method: 'POST',
+            headers: headers
+          }, (proxyRes) => {
+            let responseData = '';
+            proxyRes.on('data', chunk => responseData += chunk);
+            proxyRes.on('end', () => {
+              // 401 Unauthorized Fallback Mechanism:
+              // If ChatGPT Plus subscription fails due to missing scopes, transparently retry using standard API key!
+              if (proxyRes.statusCode === 401 && useSubscriptionToken && !isFallbackRetry) {
+                const fallbackKey = config.get('openai_api_key') || process.env.OPENAI_API_KEY;
+                if (fallbackKey) {
+                  console.warn('  ⚠ Subscription auth failed (401). Falling back to standard OpenAI API Key safely...');
+                  executeRelay(false, true); // Trigger recursive fallback relay
+                  return;
+                }
+              }
+
+              if (proxyRes.statusCode !== 200) {
+                res.writeHead(proxyRes.statusCode, { 'Content-Type': 'application/json' });
+                res.end(responseData);
+                return;
+              }
+
+              try {
+                const resJson = JSON.parse(responseData);
+                let inputTokens = 0, outputTokens = 0, responseText = '';
+
+                if (useSubscriptionToken) {
+                  inputTokens = resJson.usage?.input_tokens || 0;
+                  outputTokens = resJson.usage?.output_tokens || 0;
+                  
+                  if (Array.isArray(resJson.output)) {
+                    for (const item of resJson.output) {
+                      if (item && item.type === 'message' && Array.isArray(item.content)) {
+                        for (const block of item.content) {
+                          if (block && block.type === 'output_text') {
+                            responseText += block.text;
+                          }
+                        }
+                      }
+                    }
+                  }
+                  if (!responseText && resJson.output_text) responseText = resJson.output_text;
+
+                  // 1. Save data instantly to local SQLite
+                  db.insertEntry({
+                    session_id: activeSession,
+                    input_tokens: inputTokens,
+                    output_tokens: outputTokens,
+                    record_method: isStreamRequested ? 'proxy-subscription-stream' : 'proxy-subscription',
+                    prompt_preview: (reqJson.messages ? reqJson.messages[reqJson.messages.length - 1]?.content : reqJson.input || '').slice(0, 200),
+                    response_text: responseText.slice(0, 5000)
+                  });
+                  sendSSE({ event: 'new_entry', session_id: activeSession });
+
+                  // 2. If stream requested, execute typing emulator chunk-delivery!
+                  if (isStreamRequested && pathname === '/v1/chat/completions') {
+                    res.writeHead(200, {
+                      'Content-Type': 'text/event-stream',
+                      'Cache-Control': 'no-cache',
+                      'Connection': 'keep-alive',
+                      'Access-Control-Allow-Origin': '*'
+                    });
+
+                    const words = responseText.match(/[\s\S]{1,4}/g) || [responseText];
+                    let index = 0;
+
+                    function sendNextChunk() {
+                      if (index >= words.length) {
+                        res.write('data: [DONE]\n\n');
+                        res.end();
+                        return;
+                      }
+
+                      const chunkText = words[index];
+                      const sseChunk = {
+                        id: `chatcmpl-${resJson.id || Date.now()}`,
+                        object: 'chat.completion.chunk',
+                        created: Math.floor(Date.now() / 1000),
+                        model: reqJson.model || 'gpt-4o',
+                        choices: [{
+                          index: 0,
+                          delta: { content: chunkText },
+                          finish_reason: null
+                        }]
+                      };
+
+                      res.write(`data: ${JSON.stringify(sseChunk)}\n\n`);
+                      index++;
+                      setTimeout(sendNextChunk, Math.random() * 15 + 10);
+                    }
+
+                    sendNextChunk();
+                    return;
+                  }
+
+                  // Non-stream spec translation back to standard chat completions
+                  if (pathname === '/v1/chat/completions') {
+                    const chatFormat = {
+                      id: `chatcmpl-${resJson.id || Date.now()}`,
+                      object: 'chat.completion',
+                      created: Math.floor(Date.now() / 1000),
+                      model: resJson.model || reqJson.model || 'gpt-4o',
+                      choices: [{
+                        index: 0,
+                        message: { role: 'assistant', content: responseText },
+                        finish_reason: 'stop'
+                      }],
+                      usage: {
+                        prompt_tokens: inputTokens,
+                        completion_tokens: outputTokens,
+                        total_tokens: inputTokens + outputTokens
+                      }
+                    };
+                    responseData = JSON.stringify(chatFormat);
+                  }
+                } else {
+                  // Standard Non-stream API completions parser
+                  inputTokens = resJson.usage?.prompt_tokens || 0;
+                  outputTokens = resJson.usage?.completion_tokens || 0;
+                  responseText = resJson.choices?.[0]?.message?.content || '';
+                  
+                  db.insertEntry({
+                    session_id: activeSession,
+                    input_tokens: inputTokens,
+                    output_tokens: outputTokens,
+                    record_method: isFallbackRetry ? 'proxy-api-fallback' : 'proxy-api',
+                    prompt_preview: (reqJson.messages ? reqJson.messages[reqJson.messages.length - 1]?.content : '').slice(0, 200),
+                    response_text: responseText.slice(0, 5000)
+                  });
+                  sendSSE({ event: 'new_entry', session_id: activeSession });
+                }
+
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(responseData);
+
+              } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Proxy payload transformation failed', details: err.message }));
+              }
+            });
+          });
+
+          proxyReq.on('error', (err) => {
+            jsonResponse(res, { error: 'OpenAI relay proxy connection failed', details: err.message }, 502);
+          });
+          proxyReq.write(currentBody);
+          proxyReq.end();
+        }
+
+        // Trigger initial relay execution
+        executeRelay(isSubscription);
+        return;
+      }
+
       // ── Dashboard HTML ──────────────────────────
       if (pathname === '/') {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });

@@ -17,6 +17,9 @@
   "scripts": {
     "start": "node src/cli.js",
     "serve": "node src/cli.js serve",
-    "test": "node --test"
+    "test": "node --test",
+    "login": "node src/cli.js openai login --subscription",
+    "dashboard": "node src/cli.js serve --port 3000",
+    "logout": "node src/cli.js openai logout"
   }
 }

@@ -225,4 +225,63 @@ async function loginWithSubscription() {
   };
 }
 
-module.exports = { loginWithSubscription, generateCodeVerifier, generateCodeChallenge };
+/**
+ * Refresh an expired OAuth access token using the refresh token.
+ * Returns { access_token, refresh_token, expires_in } on success.
+ */
+async function refreshAccessToken(refreshToken) {
+  if (!refreshToken) {
+    throw new Error('No refresh token available. Please login again: token-tracker openai login --subscription');
+  }
+
+  const result = await httpsPost('auth.openai.com', TOKEN_ENDPOINT, {
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    client_id: OAUTH_CLIENT_ID,
+  });
+
+  if (result.status === 200 && result.data.access_token) {
+    return {
+      access_token: result.data.access_token,
+      refresh_token: result.data.refresh_token || refreshToken, // keep old if not returned
+      expires_in: result.data.expires_in || 0,
+    };
+  }
+
+  throw new Error(`Token refresh failed (${result.status}): ${JSON.stringify(result.data)}`);
+}
+
+/**
+ * Ensure the stored OpenAI OAuth token is valid.
+ * If expired, refresh it and save the new token to config.
+ * Returns the valid access token.
+ */
+async function ensureValidToken() {
+  const config = require('./config');
+  const auth = config.getOpenAIAuth();
+
+  if (auth.type !== 'subscription') {
+    throw new Error('Not logged in with subscription. Run: token-tracker openai login --subscription');
+  }
+
+  if (!config.isTokenExpired()) {
+    return auth.token;
+  }
+
+  // Token expired — refresh it
+  console.log('  ⟳ Token expired, refreshing...');
+  try {
+    const refreshed = await refreshAccessToken(auth.refreshToken);
+    config.saveSubscriptionAuth({
+      accessToken: refreshed.access_token,
+      refreshToken: refreshed.refresh_token,
+      expiresIn: refreshed.expires_in,
+    });
+    console.log('  ✓ Token refreshed successfully');
+    return refreshed.access_token;
+  } catch (e) {
+    throw new Error(`Token refresh failed: ${e.message}\n  Please login again: token-tracker openai login --subscription`);
+  }
+}
+
+module.exports = { loginWithSubscription, refreshAccessToken, ensureValidToken, generateCodeVerifier, generateCodeChallenge };

@@ -224,19 +224,34 @@ async function main() {
         }
 
         const model = args.model || 'claude-sonnet-4';
-        const apiType = (args['api-type'] || inferApiType(model)).toLowerCase();
+        let apiType = (args['api-type'] || inferApiType(model)).toLowerCase();
 
         // Pick the right API key: --api-key > env var > config file
         let apiKey = args['api-key'];
+        if (!apiKey && apiType === 'openai') {
+          // Check if subscription mode
+          const config = require('./config');
+          const auth = config.getOpenAIAuth();
+
+          if (auth.type === 'subscription') {
+            // Subscription: ensure token is valid (auto-refresh if needed)
+            const oauth = require('./oauth');
+            apiKey = await oauth.ensureValidToken();
+            apiType = 'openai-subscription';
+          } else if (auth.type === 'api_key') {
+            apiKey = auth.token;
+          }
+        }
         if (!apiKey) {
           const config = require('./config');
           apiKey = config.getApiKey(apiType);
         }
         if (!apiKey) {
-          const envVar = apiType === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY';
+          const envVar = apiType.startsWith('openai') ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY';
           console.error(`✗ No API key found. Set ${envVar} or run:`);
-          if (apiType === 'openai') {
+          if (apiType.startsWith('openai')) {
             console.error(`  token-tracker openai login --key "sk-..."`);
+            console.error(`  token-tracker openai login --subscription  (for ChatGPT Plus)`);
           }
           process.exit(1);
         }
@@ -252,6 +267,7 @@ async function main() {
         if (sub2 === 'login') {
           if (args.key) {
             // Key provided via --key flag
+            config.set('openai_auth_type', 'api_key');
             config.set('openai_api_key', args.key);
             console.log(`✓ API key saved to ${config.CONFIG_PATH}`);
           } else if (args.subscription || args['subscription-login']) {
@@ -264,14 +280,17 @@ async function main() {
               const result = await oauth.loginWithSubscription();
               const plan = result.payload?.['https://api.openai.com/auth']?.chatgpt_plan_type || 'unknown';
               const email = result.payload?.['https://api.openai.com/profile']?.email || 'unknown';
-              config.set('openai_api_key', result.access_token);
-              if (result.refresh_token) {
-                config.set('openai_refresh_token', result.refresh_token);
-              }
+              config.saveSubscriptionAuth({
+                accessToken: result.access_token,
+                refreshToken: result.refresh_token,
+                expiresIn: result.expires_in,
+              });
               console.log(`\n✓ Logged in via OpenAI subscription!`);
               console.log(`  Account: ${email}`);
               console.log(`  Plan:    ${plan}`);
+              console.log(`  Mode:    Subscription (Responses API)`);
               console.log(`  Token saved to ${config.CONFIG_PATH}`);
+              process.exit(0);
             } catch (e) {
               console.error(`\n✗ Login failed: ${e.message}`);
               process.exit(1);
@@ -303,41 +322,52 @@ async function main() {
               console.error('✗ Invalid API key. Must start with "sk-".');
               process.exit(1);
             }
+            config.set('openai_auth_type', 'api_key');
             config.set('openai_api_key', key);
             console.log(`✓ API key saved to ${config.CONFIG_PATH}`);
             rl.close();
           }
         } else if (sub2 === 'logout') {
-          const old = config.get('openai_api_key');
-          if (old) {
+          const auth = config.getOpenAIAuth();
+          if (auth.type) {
+            config.unset('openai_auth_type');
             config.unset('openai_api_key');
-            console.log(`✓ Logged out. Key removed from ${config.CONFIG_PATH}`);
+            config.unset('openai_oauth_token');
+            config.unset('openai_refresh_token');
+            config.unset('openai_token_expires_at');
+            const label = auth.type === 'subscription' ? 'subscription token' : 'API key';
+            console.log(`✓ Logged out. ${label} removed from ${config.CONFIG_PATH}`);
           } else {
             console.log(`- Not logged in. No key to remove.`);
           }
         } else if (sub2 === 'status') {
-          const envKey = process.env.OPENAI_API_KEY;
-          const cfgKey = config.get('openai_api_key');
+          const auth = config.getOpenAIAuth();
 
-          if (envKey) {
-            console.log(`● OPENAI_API_KEY env var is set (${envKey.slice(0, 7)}...)`);
-          } else if (cfgKey) {
-            // Detect if key is OAuth token (JWT) or API key (sk-...)
-            if (cfgKey.startsWith('eyJ')) {
+          if (auth.type === 'subscription') {
+            // Subscription mode — decode JWT for details
+            const token = auth.token || '';
+            let email = 'unknown', plan = 'unknown';
+            if (token.startsWith('eyJ')) {
               try {
-                const payload = JSON.parse(Buffer.from(cfgKey.split('.')[1], 'base64').toString());
-                const plan = payload['https://api.openai.com/auth']?.chatgpt_plan_type || 'unknown';
-                const email = payload['https://api.openai.com/profile']?.email || 'unknown';
-                console.log(`● Logged in via OAuth (${email}, plan: ${plan})`);
-              } catch {
-                console.log(`● Logged in (OAuth token)`);
-              }
-            } else {
-              console.log(`● Logged in (key in config: ${cfgKey.slice(0, 7)}...)`);
+                const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+                plan = payload['https://api.openai.com/auth']?.chatgpt_plan_type || 'unknown';
+                email = payload['https://api.openai.com/profile']?.email || 'unknown';
+              } catch {}
             }
+            const expired = config.isTokenExpired();
+            const expiresAt = auth.expiresAt ? new Date(auth.expiresAt).toLocaleString() : 'unknown';
+            console.log(`● Logged in via Subscription (Responses API)`);
+            console.log(`  Account:  ${email}`);
+            console.log(`  Plan:     ${plan}`);
+            console.log(`  Expires:  ${expiresAt} ${expired ? '(⚠ EXPIRED — will auto-refresh)' : '(valid)'}`);
+            console.log(`  Refresh:  ${auth.refreshToken ? '✓ available' : '✗ none'}`);
+          } else if (auth.type === 'api_key') {
+            console.log(`● Logged in via API Key (${auth.token.slice(0, 7)}...)`);
+            console.log(`  Endpoint: api.openai.com/v1/chat/completions`);
           } else {
             console.log(`✗ Not logged in.`);
             console.log(`  Run: token-tracker openai login`);
+            console.log(`        token-tracker openai login --subscription  (for ChatGPT Plus)`);
           }
           console.log(`  Config: ${config.CONFIG_PATH}`);
         } else {
