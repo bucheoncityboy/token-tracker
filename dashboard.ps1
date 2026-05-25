@@ -12,7 +12,7 @@ if ($connection) {
 } else {
     Write-Host "Starting real-time dashboard server in background..." -ForegroundColor Yellow
     # Start node server as hidden background process
-    Start-Process node -ArgumentList "\`"$PSScriptRoot\src\cli.js\`" serve --port 3000" -WindowStyle Hidden
+    Start-Process node -ArgumentList "\`"$PSScriptRoot\src\cli.js\`" serve --port 3000" -WorkingDirectory $PSScriptRoot -WindowStyle Hidden
     Start-Sleep -Milliseconds 1500
 }
 
