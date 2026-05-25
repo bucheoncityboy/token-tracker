@@ -66,7 +66,41 @@ function startServer(port = 3000, dbPath) {
 
     try {
       // ── OpenAI API Adapter Proxy Interceptor ──────
+      if (pathname === '/v1/models') {
+        const config = require('./config');
+        const auth = config.getOpenAIAuth();
+        let currentToken = auth.token || config.get('openai_api_key') || process.env.OPENAI_API_KEY;
+        
+        if (!currentToken) {
+          jsonResponse(res, { error: { message: "Authentication failed", type: "invalid_request_error", param: null, code: null } }, 401);
+          return;
+        }
+
+        const proxyReq = https.request({
+          hostname: 'api.openai.com',
+          path: '/v1/models',
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${currentToken}`,
+            'User-Agent': 'openai-cli/1.0.0'
+          }
+        }, (proxyRes) => {
+          res.writeHead(proxyRes.statusCode, proxyRes.headers);
+          proxyRes.pipe(res);
+        });
+
+        proxyReq.on('error', (err) => {
+          jsonResponse(res, { error: err.message }, 500);
+        });
+        proxyReq.end();
+        return;
+      }
+
       if (pathname === '/v1/chat/completions' || pathname === '/v1/responses') {
+        const isUpgrade = req.headers.upgrade && req.headers.upgrade.toLowerCase() === 'websocket';
+        if (isUpgrade) {
+          return;
+        }
         if (req.method !== 'POST') {
           jsonResponse(res, { error: 'Method not allowed' }, 405);
           return;
@@ -161,10 +195,6 @@ function startServer(port = 3000, dbPath) {
           }
 
           let targetHost = 'api.openai.com';
-          const modelName = reqJson.model || '';
-          if (modelName.toLowerCase().includes('crofai') || currentToken.startsWith('nahcrof_')) {
-            targetHost = 'crof.ai';
-          }
 
           const currentPath = useSubscriptionToken ? targetPath : '/v1/chat/completions';
           const currentBody = useSubscriptionToken ? requestBody : rawBody; // Fallback uses standard rawBody
@@ -520,6 +550,61 @@ function startServer(port = 3000, dbPath) {
       console.error('Server error:', err.message);
       jsonResponse(res, { error: err.message }, 500);
     }
+  });
+
+  server.on('upgrade', (req, socket, head) => {
+    const tls = require('tls');
+    
+    let targetHost = 'chatgpt.com';
+    let targetPort = 443;
+
+    // Check if the request is targeting api.openai.com
+    if (req.url.includes('api.openai.com') || (req.headers.host && req.headers.host.includes('openai.com'))) {
+      targetHost = 'api.openai.com';
+    } else if (req.headers.host && req.headers.host.includes('chatgpt.com')) {
+      targetHost = 'chatgpt.com';
+    }
+
+    let targetUrl = req.url;
+    if (targetHost === 'chatgpt.com' && targetUrl.startsWith('/v1/')) {
+      targetUrl = targetUrl.slice(3); // strips '/v1' but leaves the trailing slash/path
+    }
+
+    console.log(`📡 WebSocket Upgrade Proxy: ws://localhost -> wss://${targetHost}${targetUrl}`);
+
+    const targetSocket = tls.connect(targetPort, targetHost, {
+      servername: targetHost,
+      rejectUnauthorized: false
+    }, () => {
+      const reqHeaders = [];
+      reqHeaders.push(`${req.method} ${targetUrl} HTTP/1.1`);
+      
+      for (const [key, value] of Object.entries(req.headers)) {
+        if (key.toLowerCase() === 'host') {
+          reqHeaders.push(`Host: ${targetHost}`);
+        } else {
+          reqHeaders.push(`${key}: ${value}`);
+        }
+      }
+      reqHeaders.push('\r\n');
+      
+      targetSocket.write(reqHeaders.join('\r\n'));
+      if (head && head.length > 0) {
+        targetSocket.write(head);
+      }
+      
+      socket.pipe(targetSocket);
+      targetSocket.pipe(socket);
+    });
+    
+    targetSocket.on('error', (err) => {
+      console.error('WebSocket Proxy TLS error:', err.message);
+      socket.end();
+    });
+    
+    socket.on('error', (err) => {
+      targetSocket.end();
+    });
   });
 
   server.on('error', (err) => {

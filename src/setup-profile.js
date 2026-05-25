@@ -170,54 +170,97 @@ function togglePowerShellEnvProxy(enable) {
     console.error(`✗ Failed to update PowerShell profile env vars: ${err.message}`);
   }
 }
-const opencodeConfigPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
 
-function toggleOpenCodeProxy(enable) {
-  if (!fs.existsSync(opencodeConfigPath)) {
-    return; // OpenCode not installed on this machine, ignore silently
+const codexConfigPath = path.join(os.homedir(), '.codex', 'config.toml');
+
+function toggleCodexProxy(enable) {
+  const codexDir = path.join(os.homedir(), '.codex');
+  if (!fs.existsSync(codexDir)) {
+    if (!enable) return;
+    fs.mkdirSync(codexDir, { recursive: true });
   }
+
   try {
-    const raw = fs.readFileSync(opencodeConfigPath, 'utf8');
-    const config = JSON.parse(raw);
-    
-    if (config.provider && config.provider.CrofAI && config.provider.CrofAI.options) {
-      const options = config.provider.CrofAI.options;
-      if (enable) {
-        if (options.baseURL && options.baseURL !== 'http://localhost:3000/v1') {
-          options.backupBaseURL = options.baseURL;
-        }
-        options.baseURL = 'http://localhost:3000/v1';
-        console.log('✓ OpenCode opencode.json updated to point CrofAI to localhost:3000');
-      } else {
-        if (options.backupBaseURL !== undefined) {
-          options.baseURL = options.backupBaseURL;
-          delete options.backupBaseURL;
-        } else {
-          options.baseURL = 'https://crof.ai/v1';
-        }
-        console.log('✓ OpenCode opencode.json successfully restored to original configuration.');
+    let content = '';
+    if (fs.existsSync(codexConfigPath)) {
+      content = fs.readFileSync(codexConfigPath, 'utf8');
+    }
+
+    let lines = content.split(/\r?\n/);
+    let updated = false;
+
+    // Look for openai_base_url line at the top level (outside of [tables])
+    let baseUrlIdx = -1;
+    let inTable = false;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (line.startsWith('[')) {
+        inTable = true;
       }
-      fs.writeFileSync(opencodeConfigPath, JSON.stringify(config, null, 2), 'utf8');
+      if (!inTable && line.startsWith('openai_base_url')) {
+        baseUrlIdx = i;
+        break;
+      }
+    }
+
+    if (enable) {
+      if (baseUrlIdx !== -1) {
+        const val = lines[baseUrlIdx].split('=')[1].trim().replace(/['"]/g, '');
+        if (val !== 'http://localhost:3000/v1') {
+          // Backup original
+          let backupIdx = lines.findIndex(l => l.trim().startsWith('backup_openai_base_url'));
+          if (backupIdx === -1) {
+            lines.splice(baseUrlIdx, 0, `backup_openai_base_url = "${val}"`);
+            baseUrlIdx++; // account for insertion
+          }
+          lines[baseUrlIdx] = 'openai_base_url = "http://localhost:3000/v1"';
+          updated = true;
+        }
+      } else {
+        // Insert at the top level
+        lines.unshift('openai_base_url = "http://localhost:3000/v1"');
+        updated = true;
+      }
+      console.log('✓ Codex CLI config.toml updated to point to localhost:3000');
+    } else {
+      // Unlink
+      let backupIdx = lines.findIndex(l => l.trim().startsWith('backup_openai_base_url'));
+      if (baseUrlIdx !== -1) {
+        if (backupIdx !== -1) {
+          const backupVal = lines[backupIdx].split('=')[1].trim();
+          lines[baseUrlIdx] = `openai_base_url = ${backupVal}`;
+          lines.splice(backupIdx, 1);
+        } else {
+          lines.splice(baseUrlIdx, 1);
+        }
+        updated = true;
+      }
+      console.log('✓ Codex CLI config.toml successfully restored to original configuration.');
+    }
+
+    if (updated) {
+      fs.writeFileSync(codexConfigPath, lines.join('\n'), 'utf8');
     }
   } catch (e) {
-    console.error(`✗ Failed to update OpenCode config: ${e.message}`);
+    console.error(`✗ Failed to update Codex CLI config: ${e.message}`);
   }
 }
 
 // Command dispatcher
 const arg = process.argv[2];
 if (arg === '--link') {
-  console.log('🔗 Linking VS Code, Continue, & OpenCode configurations to local Token Tracker proxy...');
+  console.log('🔗 Linking VS Code, Continue, & Codex CLI configurations to local Token Tracker proxy...');
   toggleVscodeProxy(true);
   toggleContinueProxy(true);
   togglePowerShellEnvProxy(true);
-  toggleOpenCodeProxy(true);
+  toggleCodexProxy(true);
 } else if (arg === '--unlink') {
-  console.log('🔌 Unlinking VS Code, Continue, & OpenCode configurations from local proxy...');
+  console.log('🔌 Unlinking VS Code, Continue, & Codex CLI configurations from local proxy...');
   toggleVscodeProxy(false);
   toggleContinueProxy(false);
   togglePowerShellEnvProxy(false);
-  toggleOpenCodeProxy(false);
+  toggleCodexProxy(false);
 } else {
   // Default to profile setup
   configurePowerShellProfile();
