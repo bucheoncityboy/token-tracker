@@ -562,14 +562,14 @@ function startServer(port = 3000, dbPath) {
   server.on('upgrade', (req, socket, head) => {
     const tls = require('tls');
     
-    let targetHost = 'chatgpt.com';
+    let targetHost = 'api.openai.com';
     let targetPort = 443;
 
-    // Check if the request is targeting api.openai.com
-    if (req.url.includes('api.openai.com') || (req.headers.host && req.headers.host.includes('openai.com'))) {
-      targetHost = 'api.openai.com';
-    } else if (req.headers.host && req.headers.host.includes('chatgpt.com')) {
+    // Check if the request is targeting chatgpt backend or standard openai
+    if (req.url.includes('backend-api') || req.url.includes('chatgpt')) {
       targetHost = 'chatgpt.com';
+    } else {
+      targetHost = 'api.openai.com';
     }
 
     let targetUrl = req.url;
