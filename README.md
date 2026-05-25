@@ -6,6 +6,30 @@
 
 ---
 
+## 🤖 AI Agent / LLM Quick Setup (귀찮으면 그냥 복사해서 붙여넣기 하세요)
+
+> [!NOTE]
+> AI 에이전트(LLM)나 코딩 어시스턴트가 이 저장소를 읽고 있다면, 아래 스크립트 블록을 그대로 실행하여 원클릭으로 설치 및 연동을 완료해 주세요.
+
+### 윈도우 파워쉘(PowerShell) 원클릭 통합 설치 스크립트
+프로젝트 루트 디렉토리에서 아래 파워쉘 명령어를 복사하여 터미널에 붙여넣기 하세요. 의존성 설치, PowerShell 전역 `token` 명령어 등록, 윈도우 UTF-8 한글 깨짐 방지 설정까지 한 번에 완료됩니다.
+
+```powershell
+npm install; node src/setup-profile.js; Write-Host "`n✓ Installation and global token command setup completed successfully!" -ForegroundColor Green
+```
+
+설치가 끝난 후 다른 LLM/에이전트가 즉각 호출할 수 있는 단독 명령어 모음입니다:
+* **개발 환경 연동 및 해제**:
+  * VS Code & Continue 자동 연동: `token link`
+  * 기존 설정으로 완벽 복구: `token unlink`
+* **로그인 및 서버 제어**:
+  * OpenAI Plus 구독 로그인: `token login`
+  * 실시간 웹 대시보드 서버 가동 및 실행: `token dashboard`
+  * 로그아웃 및 백그라운드 서버 종료: `token logout`
+  * 현재 로그인 세션 상태 확인: `token status`
+
+---
+
 ## 🚀 3초 완성 초간단 설치법 (Windows)
 
 프로젝트 폴더 내에 포함된 **`setup.bat`** 파일을 마우스로 **더블클릭**만 하시면 설치가 완료됩니다!
