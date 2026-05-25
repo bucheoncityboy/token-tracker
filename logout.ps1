@@ -16,7 +16,9 @@ if ($connection) {
     Write-Host "Safely terminating server process (PID: $($connection.OwningProcess[0]))..." -ForegroundColor Yellow
     
     foreach ($conn in $connection) {
-        Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue
+        if ($conn.OwningProcess -gt 0) {
+            Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue
+        }
     }
     Write-Host "✓ Dashboard server terminated successfully." -ForegroundColor Green
 }
