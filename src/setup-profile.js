@@ -51,212 +51,120 @@ function configurePowerShellProfile() {
   }
 }
 
-// ─── IDE Auto-Link & Auto-Unlink Feature ───
+// ─── Legacy IDE Auto-Unlink Feature (Cleanup) ───
 
 const appData = process.env.APPDATA || (process.platform === 'darwin' ? `${process.env.HOME}/Library/Application Support` : `${process.env.HOME}/.config`);
 const vscodeSettingsPath = path.join(appData, 'Code', 'User', 'settings.json');
 const continueConfigPath = path.join(os.homedir(), '.continue', 'config.json');
 
 function toggleVscodeProxy(enable) {
-  if (!fs.existsSync(vscodeSettingsPath)) {
-    console.log(`- VS Code settings not found at: ${vscodeSettingsPath}`);
-    return;
-  }
+  if (enable) return; // Linking is deprecated
+  if (!fs.existsSync(vscodeSettingsPath)) return;
   try {
     const raw = fs.readFileSync(vscodeSettingsPath, 'utf8');
     const settings = JSON.parse(raw);
     
-    if (enable) {
-      // Backup original baseUrl and set localhost proxy
-      if (settings['openai.baseUrl'] && settings['openai.baseUrl'] !== 'http://localhost:3000/v1') {
-        settings['token-tracker.backup.openai.baseUrl'] = settings['openai.baseUrl'];
-      }
-      settings['openai.baseUrl'] = 'http://localhost:3000/v1';
-      console.log('✓ VS Code settings.json updated to point to localhost:3000');
-    } else {
-      // Restore from backup
-      if (settings['token-tracker.backup.openai.baseUrl'] !== undefined) {
-        settings['openai.baseUrl'] = settings['token-tracker.backup.openai.baseUrl'];
-        delete settings['token-tracker.backup.openai.baseUrl'];
-      } else {
-        delete settings['openai.baseUrl'];
-      }
-      console.log('✓ VS Code settings.json successfully restored to original configuration.');
+    // Restore from backup
+    if (settings['token-tracker.backup.openai.baseUrl'] !== undefined) {
+      settings['openai.baseUrl'] = settings['token-tracker.backup.openai.baseUrl'];
+      delete settings['token-tracker.backup.openai.baseUrl'];
+    } else if (settings['openai.baseUrl'] === 'http://localhost:3000/v1') {
+      delete settings['openai.baseUrl'];
     }
+    console.log('✓ VS Code settings.json successfully restored to original configuration.');
     
     fs.writeFileSync(vscodeSettingsPath, JSON.stringify(settings, null, 2), 'utf8');
   } catch (e) {
-    console.error(`✗ Failed to update VS Code settings: ${e.message}`);
+    // ignore
   }
 }
 
 function toggleContinueProxy(enable) {
-  if (!fs.existsSync(continueConfigPath)) {
-    console.log(`- Continue settings not found at: ${continueConfigPath}`);
-    return;
-  }
+  if (enable) return; // Linking is deprecated
+  if (!fs.existsSync(continueConfigPath)) return;
   try {
     const raw = fs.readFileSync(continueConfigPath, 'utf8');
     const config = JSON.parse(raw);
     
     if (Array.isArray(config.models)) {
       config.models.forEach(model => {
-        if (model.provider === 'openai' || model.provider === 'openai-aio' || (model.apiBase && model.apiBase.includes('api.openai.com'))) {
-          if (enable) {
-            if (model.apiBase && model.apiBase !== 'http://localhost:3000/v1') {
-              model.backupApiBase = model.apiBase;
-            }
-            model.apiBase = 'http://localhost:3000/v1';
-          } else {
-            if (model.backupApiBase !== undefined) {
-              model.apiBase = model.backupApiBase;
-              delete model.backupApiBase;
-            } else {
-              delete model.apiBase;
-            }
-          }
+        if (model.backupApiBase !== undefined) {
+          model.apiBase = model.backupApiBase;
+          delete model.backupApiBase;
+        } else if (model.apiBase === 'http://localhost:3000/v1') {
+          delete model.apiBase;
         }
       });
-      console.log(`✓ Continue config.json successfully ${enable ? 'linked to' : 'unlinked from'} localhost:3000`);
+      console.log(`✓ Continue config.json successfully unlinked from localhost:3000`);
     }
     
     fs.writeFileSync(continueConfigPath, JSON.stringify(config, null, 2), 'utf8');
   } catch (e) {
-    console.error(`✗ Failed to update Continue settings: ${e.message}`);
+    // ignore
   }
 }
 
 function togglePowerShellEnvProxy(enable) {
+  if (enable) return; // Linking is deprecated
   try {
     const userHome = os.homedir();
     const profileDir = path.join(userHome, 'Documents', 'WindowsPowerShell');
     const profilePath = path.join(profileDir, 'Microsoft.PowerShell_profile.ps1');
 
-    if (!fs.existsSync(profilePath)) {
-      if (!enable) return;
-      if (!fs.existsSync(profileDir)) {
-        fs.mkdirSync(profileDir, { recursive: true });
-      }
-    }
+    if (!fs.existsSync(profilePath)) return;
 
-    let content = '';
-    if (fs.existsSync(profilePath)) {
-      content = fs.readFileSync(profilePath, 'utf8');
-    }
-
-    const envSnippet = '\n# ─── Token Tracker Env Proxy ───\n$env:OPENAI_BASE_URL="http://localhost:3000/v1"\n$env:OPENAI_API_BASE="http://localhost:3000/v1"\n# ───────────────────────────────\n';
-
-    let newContent = content;
-    let updated = false;
-
-    if (enable) {
-      if (!newContent.includes('Token Tracker Env Proxy')) {
-        newContent = newContent + envSnippet;
-        updated = true;
-      }
-    } else {
-      if (newContent.includes('Token Tracker Env Proxy')) {
-        const regex = /\n*# ─── Token Tracker Env Proxy ───[\s\S]*?# ───────────────────────────────\n*/g;
-        newContent = newContent.replace(regex, '\n');
-        updated = true;
-      }
-    }
-
-    if (updated) {
-      fs.writeFileSync(profilePath, newContent, 'utf8');
-      console.log(`✓ PowerShell profile ${enable ? 'linked' : 'unlinked'} successfully (Env Variables).`);
+    let content = fs.readFileSync(profilePath, 'utf8');
+    if (content.includes('Token Tracker Env Proxy')) {
+      const regex = /\n*# ─── Token Tracker Env Proxy ───[\s\S]*?# ───────────────────────────────\n*/g;
+      content = content.replace(regex, '\n');
+      fs.writeFileSync(profilePath, content, 'utf8');
+      console.log(`✓ PowerShell profile unlinked successfully (Env Variables).`);
     }
   } catch (err) {
-    console.error(`✗ Failed to update PowerShell profile env vars: ${err.message}`);
+    // ignore
   }
 }
 
 const codexConfigPath = path.join(os.homedir(), '.codex', 'config.toml');
 
 function toggleCodexProxy(enable) {
-  const codexDir = path.join(os.homedir(), '.codex');
-  if (!fs.existsSync(codexDir)) {
-    if (!enable) return;
-    fs.mkdirSync(codexDir, { recursive: true });
-  }
-
+  if (enable) return; // Linking is deprecated
   try {
-    let content = '';
-    if (fs.existsSync(codexConfigPath)) {
-      content = fs.readFileSync(codexConfigPath, 'utf8');
-    }
-
+    if (!fs.existsSync(codexConfigPath)) return;
+    let content = fs.readFileSync(codexConfigPath, 'utf8');
     let lines = content.split(/\r?\n/);
-    let updated = false;
-
-    // Look for openai_base_url line at the top level (outside of [tables])
+    
     let baseUrlIdx = -1;
-    let inTable = false;
+    let backupIdx = -1;
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
-      if (line.startsWith('[')) {
-        inTable = true;
-      }
-      if (!inTable && line.startsWith('openai_base_url')) {
-        baseUrlIdx = i;
-        break;
-      }
+      if (line.startsWith('openai_base_url')) baseUrlIdx = i;
+      if (line.startsWith('backup_openai_base_url')) backupIdx = i;
     }
 
-    if (enable) {
-      if (baseUrlIdx !== -1) {
-        const val = lines[baseUrlIdx].split('=')[1].trim().replace(/['"]/g, '');
-        if (val !== 'http://localhost:3000/v1') {
-          // Backup original
-          let backupIdx = lines.findIndex(l => l.trim().startsWith('backup_openai_base_url'));
-          if (backupIdx === -1) {
-            lines.splice(baseUrlIdx, 0, `backup_openai_base_url = "${val}"`);
-            baseUrlIdx++; // account for insertion
-          }
-          lines[baseUrlIdx] = 'openai_base_url = "http://localhost:3000/v1"';
-          updated = true;
-        }
-      } else {
-        // Insert at the top level
-        lines.unshift('openai_base_url = "http://localhost:3000/v1"');
-        updated = true;
-      }
-      console.log('✓ Codex CLI config.toml updated to point to localhost:3000');
-    } else {
-      // Unlink
-      let backupIdx = lines.findIndex(l => l.trim().startsWith('backup_openai_base_url'));
-      if (baseUrlIdx !== -1) {
-        if (backupIdx !== -1) {
-          const backupVal = lines[backupIdx].split('=')[1].trim();
-          lines[baseUrlIdx] = `openai_base_url = ${backupVal}`;
-          lines.splice(backupIdx, 1);
-        } else {
-          lines.splice(baseUrlIdx, 1);
-        }
-        updated = true;
+    if (baseUrlIdx !== -1) {
+      if (backupIdx !== -1) {
+        const backupVal = lines[backupIdx].split('=')[1].trim();
+        lines[baseUrlIdx] = `openai_base_url = ${backupVal}`;
+        lines.splice(backupIdx, 1);
+      } else if (lines[baseUrlIdx].includes('localhost:3000')) {
+        lines.splice(baseUrlIdx, 1);
       }
       console.log('✓ Codex CLI config.toml successfully restored to original configuration.');
-    }
-
-    if (updated) {
       fs.writeFileSync(codexConfigPath, lines.join('\n'), 'utf8');
     }
   } catch (e) {
-    console.error(`✗ Failed to update Codex CLI config: ${e.message}`);
+    // ignore
   }
 }
 
 // Command dispatcher
 const arg = process.argv[2];
 if (arg === '--link') {
-  console.log('🔗 Linking VS Code, Continue, & Codex CLI configurations to local Token Tracker proxy...');
-  toggleVscodeProxy(true);
-  toggleContinueProxy(true);
-  togglePowerShellEnvProxy(true);
-  toggleCodexProxy(true);
+  console.log('ℹ️  Linking is no longer required. Token Tracker now reads directly from the Codex database.');
 } else if (arg === '--unlink') {
-  console.log('🔌 Unlinking VS Code, Continue, & Codex CLI configurations from local proxy...');
+  console.log('🔌 Cleaning up legacy proxy links from VS Code, Continue, & Codex CLI...');
   toggleVscodeProxy(false);
   toggleContinueProxy(false);
   togglePowerShellEnvProxy(false);

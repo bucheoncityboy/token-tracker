@@ -12,7 +12,8 @@
   "dependencies": {
     "better-sqlite3": "^12.10.0",
     "minimist": "^1.2.8",
-    "tiktoken": "^1.0.22"
+    "tiktoken": "^1.0.22",
+    "ws": "^8.21.0"
   },
   "scripts": {
     "start": "node src/cli.js",
