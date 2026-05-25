@@ -126,16 +126,63 @@ function toggleContinueProxy(enable) {
   }
 }
 
+function togglePowerShellEnvProxy(enable) {
+  try {
+    const userHome = os.homedir();
+    const profileDir = path.join(userHome, 'Documents', 'WindowsPowerShell');
+    const profilePath = path.join(profileDir, 'Microsoft.PowerShell_profile.ps1');
+
+    if (!fs.existsSync(profilePath)) {
+      if (!enable) return;
+      if (!fs.existsSync(profileDir)) {
+        fs.mkdirSync(profileDir, { recursive: true });
+      }
+    }
+
+    let content = '';
+    if (fs.existsSync(profilePath)) {
+      content = fs.readFileSync(profilePath, 'utf8');
+    }
+
+    const envSnippet = '\n# ─── Token Tracker Env Proxy ───\n$env:OPENAI_BASE_URL="http://localhost:3000/v1"\n$env:OPENAI_API_BASE="http://localhost:3000/v1"\n# ───────────────────────────────\n';
+
+    let newContent = content;
+    let updated = false;
+
+    if (enable) {
+      if (!newContent.includes('Token Tracker Env Proxy')) {
+        newContent = newContent + envSnippet;
+        updated = true;
+      }
+    } else {
+      if (newContent.includes('Token Tracker Env Proxy')) {
+        const regex = /\n*# ─── Token Tracker Env Proxy ───[\s\S]*?# ───────────────────────────────\n*/g;
+        newContent = newContent.replace(regex, '\n');
+        updated = true;
+      }
+    }
+
+    if (updated) {
+      fs.writeFileSync(profilePath, newContent, 'utf8');
+      console.log(`✓ PowerShell profile ${enable ? 'linked' : 'unlinked'} successfully (Env Variables).`);
+    }
+  } catch (err) {
+    console.error(`✗ Failed to update PowerShell profile env vars: ${err.message}`);
+  }
+}
+
 // Command dispatcher
 const arg = process.argv[2];
 if (arg === '--link') {
   console.log('🔗 Linking VS Code & Continue configurations to local Token Tracker proxy...');
   toggleVscodeProxy(true);
   toggleContinueProxy(true);
+  togglePowerShellEnvProxy(true);
 } else if (arg === '--unlink') {
   console.log('🔌 Unlinking VS Code & Continue configurations from local proxy...');
   toggleVscodeProxy(false);
   toggleContinueProxy(false);
+  togglePowerShellEnvProxy(false);
 } else {
   // Default to profile setup
   configurePowerShellProfile();
