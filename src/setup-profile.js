@@ -170,19 +170,54 @@ function togglePowerShellEnvProxy(enable) {
     console.error(`✗ Failed to update PowerShell profile env vars: ${err.message}`);
   }
 }
+const opencodeConfigPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
+
+function toggleOpenCodeProxy(enable) {
+  if (!fs.existsSync(opencodeConfigPath)) {
+    return; // OpenCode not installed on this machine, ignore silently
+  }
+  try {
+    const raw = fs.readFileSync(opencodeConfigPath, 'utf8');
+    const config = JSON.parse(raw);
+    
+    if (config.provider && config.provider.CrofAI && config.provider.CrofAI.options) {
+      const options = config.provider.CrofAI.options;
+      if (enable) {
+        if (options.baseURL && options.baseURL !== 'http://localhost:3000/v1') {
+          options.backupBaseURL = options.baseURL;
+        }
+        options.baseURL = 'http://localhost:3000/v1';
+        console.log('✓ OpenCode opencode.json updated to point CrofAI to localhost:3000');
+      } else {
+        if (options.backupBaseURL !== undefined) {
+          options.baseURL = options.backupBaseURL;
+          delete options.backupBaseURL;
+        } else {
+          options.baseURL = 'https://crof.ai/v1';
+        }
+        console.log('✓ OpenCode opencode.json successfully restored to original configuration.');
+      }
+      fs.writeFileSync(opencodeConfigPath, JSON.stringify(config, null, 2), 'utf8');
+    }
+  } catch (e) {
+    console.error(`✗ Failed to update OpenCode config: ${e.message}`);
+  }
+}
 
 // Command dispatcher
 const arg = process.argv[2];
 if (arg === '--link') {
-  console.log('🔗 Linking VS Code & Continue configurations to local Token Tracker proxy...');
+  console.log('🔗 Linking VS Code, Continue, & OpenCode configurations to local Token Tracker proxy...');
   toggleVscodeProxy(true);
   toggleContinueProxy(true);
   togglePowerShellEnvProxy(true);
+  toggleOpenCodeProxy(true);
 } else if (arg === '--unlink') {
-  console.log('🔌 Unlinking VS Code & Continue configurations from local proxy...');
+  console.log('🔌 Unlinking VS Code, Continue, & OpenCode configurations from local proxy...');
   toggleVscodeProxy(false);
   toggleContinueProxy(false);
   togglePowerShellEnvProxy(false);
+  toggleOpenCodeProxy(false);
 } else {
   // Default to profile setup
   configurePowerShellProfile();

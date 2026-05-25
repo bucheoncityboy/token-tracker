@@ -143,15 +143,27 @@ function startServer(port = 3000, dbPath) {
           }
         } catch {}
 
+        const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+        let reqToken = null;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          reqToken = authHeader.slice(7);
+        }
+
         // Recursive Relayer supporting intelligent API Key fallback
         function executeRelay(useSubscriptionToken, isFallbackRetry = false) {
-          const currentToken = useSubscriptionToken ? token : (config.get('openai_api_key') || process.env.OPENAI_API_KEY);
+          const currentToken = useSubscriptionToken ? token : (reqToken || config.get('openai_api_key') || process.env.OPENAI_API_KEY);
           
           if (!currentToken) {
             jsonResponse(res, { 
               error: 'Authentication failed. Subscription returned 401 and no fallback OpenAI API Key was found in configuration.' 
             }, 401);
             return;
+          }
+
+          let targetHost = 'api.openai.com';
+          const modelName = reqJson.model || '';
+          if (modelName.toLowerCase().includes('crofai') || currentToken.startsWith('nahcrof_')) {
+            targetHost = 'crof.ai';
           }
 
           const currentPath = useSubscriptionToken ? targetPath : '/v1/chat/completions';
@@ -182,7 +194,7 @@ function startServer(port = 3000, dbPath) {
             let accumulatedText = '';
 
             const proxyReq = https.request({
-              hostname: 'api.openai.com',
+              hostname: targetHost,
               path: currentPath,
               method: 'POST',
               headers: headers
@@ -233,7 +245,7 @@ function startServer(port = 3000, dbPath) {
 
           // ────── CASE B: Non-stream or Subscription Adapter ──────
           const proxyReq = https.request({
-            hostname: 'api.openai.com',
+            hostname: targetHost,
             path: currentPath,
             method: 'POST',
             headers: headers
